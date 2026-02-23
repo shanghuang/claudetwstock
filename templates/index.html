@@ -1,0 +1,855 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Taiwan Stock Screener</title>
+  <link
+    href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+    rel="stylesheet"
+    crossorigin="anonymous"
+  />
+  <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    body { background: #0f1117; color: #ffffff; }
+    .card { background: #1a1f2e; border: 1px solid #2d3748; --bs-card-color: #ffffff; }
+    .card-header { background: #232b3e; border-bottom: 1px solid #2d3748; font-weight: 600; color: #ffffff; }
+    .form-control, .form-select, .input-group-text {
+      background: #232b3e; border-color: #2d3748; color: #ffffff;
+    }
+    .form-control:focus { background: #2d3748; color: #ffffff; border-color: #4a90e2; box-shadow: none; }
+    .form-check-input { background-color: #232b3e; border-color: #4a90e2; }
+    .form-check-label { color: #ffffff; }
+    .progress { background: #2d3748; height: 22px; }
+    .log-box {
+      max-height: 140px; overflow-y: auto; font-size: 0.78rem;
+      background: #0d1117; border: 1px solid #2d3748; border-radius: 6px;
+      padding: 8px 10px; font-family: monospace;
+    }
+    .log-ok   { color: #63e6be; }
+    .log-fail { color: #ff6b6b; }
+    table { font-size: 0.82rem; }
+    th { cursor: pointer; user-select: none; white-space: nowrap; }
+    th:hover { background: #2d3748; }
+    th .sort-icon { font-size: 0.7rem; margin-left: 3px; color: #ffffff; }
+    .text-muted { color: #ffffff !important; }
+    th.sorted-asc  .sort-icon::after { content: "▲"; color: #4a90e2; }
+    th.sorted-desc .sort-icon::after { content: "▼"; color: #4a90e2; }
+    th:not(.sorted-asc):not(.sorted-desc) .sort-icon::after { content: "⇅"; }
+    .score-hi   { color: #51cf66; font-weight: 600; }
+    .score-mid  { color: #4a90e2; }
+    .score-lo   { color: #ff6b6b; }
+    .rsi-good   { color: #51cf66; }
+    .rsi-warn   { color: #ffa94d; }
+    .grow-pos   { color: #51cf66; }
+    .grow-neg   { color: #ff6b6b; }
+    .macd-up    { color: #51cf66; }
+    .macd-down  { color: #ff6b6b; }
+    .badge-preset { cursor: pointer; }
+    #filter-expr { font-family: monospace; }
+    .table-responsive { max-height: 70vh; overflow-y: auto; }
+    thead th { position: sticky; top: 0; background: #232b3e; z-index: 1; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #1a1f2e; }
+    ::-webkit-scrollbar-thumb { background: #4a5568; border-radius: 3px; }
+  </style>
+</head>
+<body>
+<div class="container-fluid py-3 px-4">
+
+  <!-- ── Header ── -->
+  <div class="d-flex align-items-center mb-3 gap-3">
+    <h4 class="mb-0 fw-bold text-info">Taiwan Stock Screener</h4>
+    <small class="text-muted">Universe: {{ universe_count }} stocks</small>
+  </div>
+
+  <!-- ── Stock Selection ── -->
+  <div class="card mb-3">
+    <div class="card-header">Stock Selection</div>
+    <div class="card-body">
+      <div class="row g-3 align-items-end">
+        <div class="col-auto">
+          <div class="form-check">
+            <input class="form-check-input" type="radio" name="mode" id="modeAll" value="all" checked />
+            <label class="form-check-label" for="modeAll">
+              Full universe ({{ universe_count }} stocks)
+            </label>
+          </div>
+          <div class="form-check mt-1">
+            <input class="form-check-input" type="radio" name="mode" id="modeCustom" value="custom" />
+            <label class="form-check-label" for="modeCustom">Custom symbols:</label>
+          </div>
+        </div>
+        <div class="col">
+          <input
+            id="customSymbols"
+            type="text"
+            class="form-control"
+            placeholder="e.g. 2330, 2454, 2317"
+            disabled
+          />
+        </div>
+        <div class="col-auto">
+          <button id="btnStart" class="btn btn-primary px-4">&#9654; Start Screening</button>
+        </div>
+      </div>
+      <div class="d-flex flex-wrap gap-3 align-items-center mt-3">
+        <span class="small">RSI ≤</span>
+        <select id="maxRSI" class="form-select form-select-sm" style="width:80px">
+          <option value="">Any</option>
+          <option value="50">50</option>
+          <option value="60">60</option>
+          <option value="65">65</option>
+          <option value="70">70</option>
+          <option value="75">75</option>
+          <option value="80">80</option>
+        </select>
+        <span class="small">BIAS5 ≤</span>
+        <select id="maxBias5" class="form-select form-select-sm" style="width:80px">
+          <option value="">Any</option>
+          <option value="2">2%</option>
+          <option value="3">3%</option>
+          <option value="5">5%</option>
+          <option value="8">8%</option>
+          <option value="10">10%</option>
+        </select>
+        <span class="small ms-3">Consecutive Buy Days ≥</span>
+        <div class="d-flex align-items-center gap-1">
+          <label class="small mb-0">Foreign</label>
+          <select id="minForeignDays" class="form-select form-select-sm" style="width:80px">
+            <option value="0">Any</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+            <option value="5">5</option>
+            <option value="6">6</option>
+            <option value="7">7</option>
+          </select>
+        </div>
+        <div class="d-flex align-items-center gap-1">
+          <label class="small mb-0">SITC</label>
+          <select id="minSITCDays" class="form-select form-select-sm" style="width:80px">
+            <option value="0">Any</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+            <option value="5">5</option>
+            <option value="6">6</option>
+            <option value="7">7</option>
+          </select>
+        </div>
+        <div class="d-flex align-items-center gap-1">
+          <label class="small mb-0">Dealer</label>
+          <select id="minDealerDays" class="form-select form-select-sm" style="width:80px">
+            <option value="0">Any</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+            <option value="5">5</option>
+            <option value="6">6</option>
+            <option value="7">7</option>
+          </select>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Progress ── -->
+  <div class="card mb-3" id="progressCard" style="display:none!important">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span>Progress</span>
+      <span id="progressLabel" class="text-muted small">0 / 0</span>
+    </div>
+    <div class="card-body pb-2">
+      <div class="progress mb-2">
+        <div
+          id="progressBar"
+          class="progress-bar progress-bar-striped progress-bar-animated bg-info"
+          style="width:0%"
+        ></div>
+      </div>
+      <div id="logBox" class="log-box"></div>
+    </div>
+  </div>
+
+  <!-- ── Filter ── -->
+  <div class="card mb-3" id="filterCard">
+    <div class="card-header">Filters</div>
+    <div class="card-body">
+      <div class="row g-2 align-items-center mb-2">
+        <div class="col">
+          <div class="input-group">
+            <span class="input-group-text">Expression</span>
+            <input
+              id="filter-expr"
+              type="text"
+              class="form-control"
+              placeholder='e.g. RSI &lt; 70 AND PE &lt; 25 AND ForeignNet &gt; 0'
+            />
+          </div>
+        </div>
+        <div class="col-auto">
+          <button class="btn btn-sm btn-outline-secondary" onclick="applyFilter()">Apply</button>
+          <button class="btn btn-sm btn-outline-danger ms-1" onclick="clearFilter()">Clear</button>
+        </div>
+      </div>
+      <div class="d-flex flex-wrap gap-2 mb-2">
+        <span class="text-muted small align-self-center">Presets:</span>
+        <span class="badge bg-secondary badge-preset" data-expr="PE < 15 AND PB < 2">Value</span>
+        <span class="badge bg-secondary badge-preset" data-expr="RSI > 40 AND RSI < 65">Breakout</span>
+        <span class="badge bg-secondary badge-preset" data-expr="DivYield > 3">High Div</span>
+        <span class="badge bg-secondary badge-preset" data-expr="RevGrowth > 15 AND EPSGrowth > 15">Growth</span>
+        <span class="badge bg-primary badge-preset" data-expr="ForeignNet > 0">Foreign Buy</span>
+        <span class="badge bg-primary badge-preset" data-expr="SITC > 0">SITC Buy</span>
+        <span class="badge bg-primary badge-preset" data-expr="DealerNet > 0">Dealer Buy</span>
+        <span class="badge bg-primary badge-preset" data-expr="ThreeMajorNet > 0">3-Major Buy</span>
+        <span class="badge bg-success badge-streak" data-foreign="3">Foreign 3d+</span>
+        <span class="badge bg-success badge-streak" data-sitc="3">SITC 3d+</span>
+        <span class="badge bg-success badge-streak" data-dealer="3">Dealer 3d+</span>
+        <span class="badge bg-success badge-streak" data-foreign="3" data-sitc="3">F+S 3d+</span>
+      </div>
+
+      <div class="row g-2">
+        <div class="col-auto d-flex align-items-center gap-2">
+          <label class="text-muted small mb-0">Min score</label>
+          <input id="minScore" type="number" class="form-control form-control-sm" style="width:70px" value="0" min="0" max="100" />
+        </div>
+        <div class="col-auto d-flex align-items-center gap-2">
+          <label class="text-muted small mb-0">Show top</label>
+          <input id="showTop" type="number" class="form-control form-control-sm" style="width:70px" value="50" min="1" max="200" />
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Results ── -->
+  <div class="card" id="resultsCard" style="display:none!important">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span>
+        Results <span id="resultCount" class="text-muted small"></span>
+        <span id="t86Badge" class="badge bg-dark border border-secondary ms-2 small fw-normal" style="display:none"></span>
+      </span>
+      <button class="btn btn-sm btn-outline-success" onclick="exportCSV()">Export CSV</button>
+    </div>
+    <div class="card-body p-0">
+      <div class="table-responsive">
+        <table class="table table-dark table-hover table-sm mb-0" id="resultsTable">
+          <thead>
+            <tr>
+              <th data-col="rank">#<span class="sort-icon"></span></th>
+              <th data-col="symbol">Symbol<span class="sort-icon"></span></th>
+              <th data-col="name">Name<span class="sort-icon"></span></th>
+              <th data-col="price">Price<span class="sort-icon"></span></th>
+              <th data-col="composite">Score<span class="sort-icon"></span></th>
+              <th data-col="technical">Tech<span class="sort-icon"></span></th>
+              <th data-col="value">Val<span class="sort-icon"></span></th>
+              <th data-col="financial">Fin<span class="sort-icon"></span></th>
+              <th data-col="pe">PE<span class="sort-icon"></span></th>
+              <th data-col="pb">PB<span class="sort-icon"></span></th>
+              <th data-col="div_yield">Div%<span class="sort-icon"></span></th>
+              <th data-col="rsi">RSI<span class="sort-icon"></span></th>
+              <th data-col="bias5">BIAS5%<span class="sort-icon"></span></th>
+              <th data-col="macd_bull">MACD<span class="sort-icon"></span></th>
+              <th data-col="rev_growth">RevG%<span class="sort-icon"></span></th>
+              <th data-col="eps_growth">EPSG%<span class="sort-icon"></span></th>
+              <th data-col="profit_margin">Margin%<span class="sort-icon"></span></th>
+              <th data-col="foreign_net">Foreign<span class="sort-icon"></span></th>
+              <th data-col="trust_net">SITC<span class="sort-icon"></span></th>
+              <th data-col="dealer_net">Dealer<span class="sort-icon"></span></th>
+              <th data-col="foreign_consecutive">F.Days<span class="sort-icon"></span></th>
+              <th data-col="sitc_consecutive">S.Days<span class="sort-icon"></span></th>
+              <th data-col="dealer_consecutive">D.Days<span class="sort-icon"></span></th>
+              <th data-col="three_major_net">3-Major<span class="sort-icon"></span></th>
+            </tr>
+          </thead>
+          <tbody id="resultsBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /container -->
+
+<!-- ── Chart Modal ── -->
+<div class="modal fade" id="chartModal" tabindex="-1">
+  <div class="modal-dialog modal-xl modal-dialog-centered">
+    <div class="modal-content" style="background:#1a1f2e; border:1px solid #2d3748;">
+      <div class="modal-header" style="border-color:#2d3748; padding:10px 16px;">
+        <h6 class="modal-title mb-0 fw-bold" id="chartModalTitle"></h6>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body p-0">
+        <div id="chartContainer" style="width:100%; height:520px;"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" crossorigin="anonymous"></script>
+<script>
+// ─── State ────────────────────────────────────────────────────────────────────
+let allResults  = [];
+let lastLogIdx  = 0;
+let pollTimer   = null;
+let sortCol     = "composite";
+let sortAsc     = false;
+let debounceTimer = null;
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function fmt(val, dec = 1) {
+  return val == null ? "—" : Number(val).toFixed(dec);
+}
+
+function fmtShares(v) {
+  if (v == null) return "—";
+  const sign = v > 0 ? "+" : "";
+  const abs = Math.abs(v);
+  if (abs >= 1e6) return sign + (v / 1e6).toFixed(1) + "M";
+  if (abs >= 1e3) return sign + (v / 1e3).toFixed(0) + "K";
+  return sign + v;
+}
+
+function scoreClass(v) {
+  if (v == null) return "";
+  if (v >= 70) return "score-hi";
+  if (v >= 50) return "score-mid";
+  return "score-lo";
+}
+
+function rsiClass(v) {
+  if (v == null) return "";
+  if (v >= 40 && v <= 65) return "rsi-good";
+  if (v > 70) return "rsi-warn";
+  return "";
+}
+
+function growClass(v) {
+  if (v == null) return "";
+  return v > 0 ? "grow-pos" : (v < 0 ? "grow-neg" : "");
+}
+
+function bias5Class(v) {
+  if (v == null) return "";
+  if (v < 3)  return "rsi-good";   // within range — green
+  if (v < 6)  return "rsi-warn";   // mildly extended — orange
+  return "score-lo";               // overbought — red
+}
+
+function streakClass(v) {
+  if (v == null || v === 0) return "text-muted";
+  if (v >= 5) return "score-hi";
+  if (v >= 2) return "grow-pos";
+  return "";
+}
+
+// ─── Filter Engine ────────────────────────────────────────────────────────────
+
+const FIELD_MAP = {
+  Composite: "composite", Technical: "technical", Value: "value",
+  Financial: "financial", PE: "pe", PB: "pb", DivYield: "div_yield",
+  RSI: "rsi", RevGrowth: "rev_growth", EPSGrowth: "eps_growth",
+  Price: "price", ProfitMargin: "profit_margin",
+  ForeignNet: "foreign_net", TrustNet: "trust_net", SITC: "trust_net",
+  DealerNet: "dealer_net", ThreeMajorNet: "three_major_net",
+  Bias5: "bias5",
+  ForeignDays: "foreign_consecutive",
+  SITCDays:    "sitc_consecutive",
+  DealerDays:  "dealer_consecutive",
+};
+
+function evaluateExpr(expr, row) {
+  if (!expr || !expr.trim()) return true;
+  let s = expr.trim();
+
+  // Replace field names with numeric values (or NaN for null)
+  for (const [name, key] of Object.entries(FIELD_MAP)) {
+    const val = row[key];
+    const num = val == null ? "NaN" : String(Number(val));
+    // Use word-boundary-like replacement (preceded/followed by non-word chars)
+    s = s.replace(new RegExp(`(?<![\\w.])${name}(?![\\w])`, "g"), num);
+  }
+
+  // Normalise logical operators
+  s = s.replace(/\bAND\b/g, "&&").replace(/\bOR\b/g, "||").replace(/\bNOT\b/g, "!");
+
+  // Whitelist: only allow numbers, operators, parens, spaces, NaN
+  if (!/^[\d\s\.\+\-\*\/\(\)\<\>\=\!\&\|NaN]+$/.test(s)) {
+    return false;
+  }
+
+  try {
+    // eslint-disable-next-line no-new-func
+    return Boolean(new Function(`"use strict"; return (${s});`)());
+  } catch {
+    return false;
+  }
+}
+
+// ─── Render Results ───────────────────────────────────────────────────────────
+
+function renderResults() {
+  const expr        = document.getElementById("filter-expr").value;
+  const minScore    = parseFloat(document.getElementById("minScore").value) || 0;
+  const showTop     = parseInt(document.getElementById("showTop").value)  || 50;
+  const minForeign  = parseInt(document.getElementById("minForeignDays").value) || 0;
+  const minSITC     = parseInt(document.getElementById("minSITCDays").value)    || 0;
+  const minDealer   = parseInt(document.getElementById("minDealerDays").value)  || 0;
+  const maxRSI      = parseFloat(document.getElementById("maxRSI").value)       || Infinity;
+  const maxBias5    = parseFloat(document.getElementById("maxBias5").value)     || Infinity;
+
+  // Filter
+  let rows = allResults.filter(r =>
+    r.composite >= minScore &&
+    evaluateExpr(expr, r) &&
+    (r.foreign_consecutive || 0) >= minForeign &&
+    (r.sitc_consecutive    || 0) >= minSITC &&
+    (r.dealer_consecutive  || 0) >= minDealer &&
+    (r.rsi   == null || r.rsi   <= maxRSI) &&
+    (r.bias5 == null || r.bias5 <= maxBias5)
+  );
+
+  // Sort
+  rows.sort((a, b) => {
+    const va = a[sortCol], vb = b[sortCol];
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1;
+    if (vb == null) return -1;
+    if (typeof va === "string") return sortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+    return sortAsc ? va - vb : vb - va;
+  });
+
+  rows = rows.slice(0, showTop);
+
+  const tbody = document.getElementById("resultsBody");
+  tbody.innerHTML = "";
+
+  rows.forEach((r, i) => {
+    const macdHtml = r.macd_bull
+      ? `<span class="macd-up">↑</span>`
+      : `<span class="macd-down">↓</span>`;
+
+    tbody.insertAdjacentHTML("beforeend", `
+      <tr style="cursor:pointer" onclick="showChart('${r.symbol}', '${r.name.replace(/'/g, "\\'")}')">
+        <td>${i + 1}</td>
+        <td><strong>${r.symbol}</strong></td>
+        <td class="text-muted">${r.name}</td>
+        <td>${fmt(r.price, 2)}</td>
+        <td class="${scoreClass(r.composite)}">${fmt(r.composite)}</td>
+        <td class="${scoreClass(r.technical)}">${r.technical}</td>
+        <td class="${scoreClass(r.value)}">${r.value}</td>
+        <td class="${scoreClass(r.financial)}">${r.financial}</td>
+        <td>${fmt(r.pe)}</td>
+        <td>${fmt(r.pb, 2)}</td>
+        <td class="${growClass(r.div_yield)}">${r.div_yield != null ? fmt(r.div_yield, 1) + "%" : "—"}</td>
+        <td class="${rsiClass(r.rsi)}">${fmt(r.rsi)}</td>
+        <td class="${bias5Class(r.bias5)}">${r.bias5 != null ? fmt(r.bias5, 1) + "%" : "—"}</td>
+        <td>${macdHtml}</td>
+        <td class="${growClass(r.rev_growth)}">${r.rev_growth != null ? fmt(r.rev_growth, 1) + "%" : "—"}</td>
+        <td class="${growClass(r.eps_growth)}">${r.eps_growth != null ? fmt(r.eps_growth, 1) + "%" : "—"}</td>
+        <td class="${growClass(r.profit_margin)}">${r.profit_margin != null ? fmt(r.profit_margin, 1) + "%" : "—"}</td>
+        <td class="${growClass(r.foreign_net)}">${fmtShares(r.foreign_net)}</td>
+        <td class="${growClass(r.trust_net)}">${fmtShares(r.trust_net)}</td>
+        <td class="${growClass(r.dealer_net)}">${fmtShares(r.dealer_net)}</td>
+        <td class="${streakClass(r.foreign_consecutive)}">${r.foreign_consecutive ?? 0}</td>
+        <td class="${streakClass(r.sitc_consecutive)}">${r.sitc_consecutive ?? 0}</td>
+        <td class="${streakClass(r.dealer_consecutive)}">${r.dealer_consecutive ?? 0}</td>
+        <td class="${growClass(r.three_major_net)}">${fmtShares(r.three_major_net)}</td>
+      </tr>`);
+  });
+
+  document.getElementById("resultCount").textContent = `(${rows.length} shown of ${allResults.length})`;
+  show("resultsCard");
+}
+
+// ─── Sorting ──────────────────────────────────────────────────────────────────
+
+document.querySelectorAll("#resultsTable th[data-col]").forEach(th => {
+  th.addEventListener("click", () => {
+    const col = th.dataset.col;
+    if (col === "rank") return;
+    if (sortCol === col) {
+      sortAsc = !sortAsc;
+    } else {
+      sortCol = col;
+      sortAsc = col === "symbol" || col === "name";
+    }
+    document.querySelectorAll("#resultsTable th").forEach(h => {
+      h.classList.remove("sorted-asc", "sorted-desc");
+    });
+    th.classList.add(sortAsc ? "sorted-asc" : "sorted-desc");
+    renderResults();
+  });
+});
+
+// ─── Filter Controls ──────────────────────────────────────────────────────────
+
+document.getElementById("filter-expr").addEventListener("input", () => {
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(renderResults, 400);
+});
+
+document.getElementById("minScore").addEventListener("input", () => {
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(renderResults, 300);
+});
+
+document.getElementById("showTop").addEventListener("input", () => {
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(renderResults, 300);
+});
+
+document.querySelectorAll(".badge-preset").forEach(b => {
+  b.addEventListener("click", () => {
+    document.getElementById("filter-expr").value = b.dataset.expr;
+    renderResults();
+  });
+});
+
+document.querySelectorAll(".badge-streak").forEach(b => {
+  b.addEventListener("click", () => {
+    if (b.dataset.foreign) document.getElementById("minForeignDays").value = b.dataset.foreign;
+    if (b.dataset.sitc)    document.getElementById("minSITCDays").value    = b.dataset.sitc;
+    if (b.dataset.dealer)  document.getElementById("minDealerDays").value  = b.dataset.dealer;
+    renderResults();
+  });
+});
+
+document.getElementById("minForeignDays").addEventListener("change", renderResults);
+document.getElementById("minSITCDays").addEventListener("change", renderResults);
+document.getElementById("minDealerDays").addEventListener("change", renderResults);
+document.getElementById("maxRSI").addEventListener("change", renderResults);
+document.getElementById("maxBias5").addEventListener("change", renderResults);
+
+function applyFilter() { renderResults(); }
+function clearFilter() {
+  document.getElementById("filter-expr").value = "";
+  renderResults();
+}
+
+// ─── Export CSV ───────────────────────────────────────────────────────────────
+
+function exportCSV() {
+  if (!allResults.length) return;
+  const cols = [
+    "symbol","name","price","composite","technical","value","financial",
+    "pe","pb","div_yield","rsi","bias5","macd_bull","rev_growth","eps_growth","profit_margin",
+    "foreign_net","trust_net","dealer_net","three_major_net",
+    "foreign_consecutive","sitc_consecutive","dealer_consecutive","t86_date"
+  ];
+  const lines = [cols.join(",")];
+  allResults.forEach(r => {
+    lines.push(cols.map(c => {
+      const v = r[c];
+      if (v == null) return "";
+      if (typeof v === "string" && v.includes(",")) return `"${v}"`;
+      return v;
+    }).join(","));
+  });
+  const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `tw_picks_${new Date().toISOString().slice(0,16).replace(/[T:]/g,"_")}.csv`;
+  a.click();
+}
+
+// ─── Polling ──────────────────────────────────────────────────────────────────
+
+function startPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(pollStatus, 1000);
+}
+
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+
+async function pollStatus() {
+  try {
+    const r = await fetch("/status");
+    const s = await r.json();
+
+    // Update progress bar
+    const pct = s.total ? Math.round((s.current / s.total) * 100) : 0;
+    document.getElementById("progressBar").style.width = pct + "%";
+    document.getElementById("progressLabel").textContent = `${s.current} / ${s.total}`;
+
+    // Append new log entries
+    const logBox  = document.getElementById("logBox");
+    const newLogs = s.log.slice(lastLogIdx);
+    lastLogIdx = s.log.length;
+    newLogs.forEach(e => {
+      const span = document.createElement("span");
+      span.className = e.ok ? "log-ok" : "log-fail";
+      span.textContent = e.ok
+        ? `${e.symbol}: ${e.composite?.toFixed(1)}  (T=${e.t} V=${e.v} F=${e.f})\n`
+        : `${e.symbol}: ✗ no data\n`;
+      logBox.appendChild(span);
+      logBox.scrollTop = logBox.scrollHeight;
+    });
+
+    // Show T86 date badge as soon as we know it
+    if (s.t86_date) {
+      const badge = document.getElementById("t86Badge");
+      badge.textContent = `Flow data: ${s.t86_date}`;
+      badge.style.display = "";
+    }
+
+    // Done?
+    if (s.status === "done" || (s.status || "").startsWith("error")) {
+      stopPolling();
+      document.getElementById("progressBar").classList.remove(
+        "progress-bar-striped", "progress-bar-animated"
+      );
+      if (s.status === "done") {
+        document.getElementById("progressBar").classList.replace("bg-info", "bg-success");
+        await fetchResults();
+      } else {
+        document.getElementById("progressBar").classList.replace("bg-info", "bg-danger");
+      }
+      document.getElementById("btnStart").disabled = false;
+      document.getElementById("btnStart").textContent = "▶ Start Screening";
+    }
+  } catch {
+    // network blip — keep polling
+  }
+}
+
+async function fetchResults() {
+  const r    = await fetch("/results");
+  allResults = await r.json();
+  show("filterCard");
+  renderResults();
+}
+
+// ─── Start Button ─────────────────────────────────────────────────────────────
+
+document.getElementById("btnStart").addEventListener("click", async () => {
+  const mode   = document.querySelector('input[name="mode"]:checked').value;
+  const custom = document.getElementById("customSymbols").value;
+
+  let symbols = null;
+  if (mode === "custom") {
+    symbols = custom.split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+    if (!symbols.length) { alert("Enter at least one symbol."); return; }
+  }
+
+  // Reset UI
+  allResults  = [];
+  lastLogIdx  = 0;
+  document.getElementById("logBox").innerHTML = "";
+  document.getElementById("progressBar").style.width = "0%";
+  document.getElementById("progressBar").className =
+    "progress-bar progress-bar-striped progress-bar-animated bg-info";
+  document.getElementById("progressLabel").textContent = "0 / 0";
+  hide("resultsCard");
+  show("progressCard");
+
+  document.getElementById("btnStart").disabled = true;
+  document.getElementById("btnStart").textContent = "Running…";
+
+  try {
+    const resp = await fetch("/screen", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ symbols }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json();
+      alert("Error: " + err.error);
+      document.getElementById("btnStart").disabled = false;
+      document.getElementById("btnStart").textContent = "▶ Start Screening";
+      return;
+    }
+    const data = await resp.json();
+    document.getElementById("progressLabel").textContent = `0 / ${data.total}`;
+    startPolling();
+  } catch (e) {
+    alert("Network error: " + e.message);
+    document.getElementById("btnStart").disabled = false;
+    document.getElementById("btnStart").textContent = "▶ Start Screening";
+  }
+});
+
+// Toggle custom input
+document.querySelectorAll('input[name="mode"]').forEach(r =>
+  r.addEventListener("change", () => {
+    document.getElementById("customSymbols").disabled =
+      document.querySelector('input[name="mode"]:checked').value !== "custom";
+  })
+);
+
+// ─── Utility ──────────────────────────────────────────────────────────────────
+
+function show(id) { document.getElementById(id).style.removeProperty("display"); }
+function hide(id) { document.getElementById(id).style.display = "none"; }
+
+// ─── Candlestick Chart ────────────────────────────────────────────────────────
+
+function calcMA(data, period) {
+  return data.reduce((acc, d, i) => {
+    if (i >= period - 1) {
+      const avg = data.slice(i - period + 1, i + 1).reduce((s, x) => s + x.close, 0) / period;
+      acc.push({ time: d.time, value: parseFloat(avg.toFixed(2)) });
+    }
+    return acc;
+  }, []);
+}
+
+function calcRSI(data, period = 14) {
+  if (data.length < period + 1) return [];
+  const result = [];
+  let avgGain = 0, avgLoss = 0;
+  for (let i = 1; i <= period; i++) {
+    const chg = data[i].close - data[i - 1].close;
+    if (chg > 0) avgGain += chg; else avgLoss -= chg;
+  }
+  avgGain /= period; avgLoss /= period;
+  for (let i = period; i < data.length; i++) {
+    if (i > period) {
+      const chg = data[i].close - data[i - 1].close;
+      avgGain = (avgGain * (period - 1) + Math.max(chg, 0)) / period;
+      avgLoss = (avgLoss * (period - 1) + Math.max(-chg, 0)) / period;
+    }
+    const rsi = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+    result.push({ time: data[i].time, value: parseFloat(rsi.toFixed(2)) });
+  }
+  return result;
+}
+
+let _chart = null;
+
+async function showChart(symbol, name) {
+  document.getElementById("chartModalTitle").textContent = `${symbol}  ${name}`;
+
+  const modalEl = document.getElementById("chartModal");
+  const modal   = bootstrap.Modal.getOrCreateInstance(modalEl);
+  modal.show();
+
+  // Destroy previous chart instance
+  const container = document.getElementById("chartContainer");
+  if (_chart) { _chart.remove(); _chart = null; }
+  container.innerHTML = '<div class="text-center text-muted py-5">Loading…</div>';
+
+  try {
+    const resp = await fetch(`/chart/${symbol}`);
+    const data = await resp.json();
+    const ohlcv = data.ohlcv ?? [];
+    const flow  = data.flow  ?? [];
+
+    if (!ohlcv.length) {
+      container.innerHTML = '<div class="text-center text-muted py-5">No data available.</div>';
+      return;
+    }
+
+    container.innerHTML = "";
+    const hasFlow = flow.length > 0;
+
+    // Layout (fractions of chart height, top→bottom):
+    //   candles+MA5 : 0.02 – 0.36
+    //   volume      : 0.38 – 0.44
+    //   RSI         : 0.46 – 0.60
+    //   flow bars   : 0.63 – 1.00  (only when hasFlow)
+    const candleBottom = hasFlow ? 0.66 : 0.38;
+    const volTop       = hasFlow ? 0.38 : 0.38;
+    const volBottom    = hasFlow ? 0.58 : 0.30;
+    const rsiTop       = hasFlow ? 0.46 : 0.52;
+    const rsiBottom    = hasFlow ? 0.40 : 0.08;
+
+    _chart = LightweightCharts.createChart(container, {
+      width:  container.clientWidth,
+      height: 520,
+      layout: { background: { color: "#1a1f2e" }, textColor: "#ffffff" },
+      grid:   { vertLines: { color: "#2d3748" }, horzLines: { color: "#2d3748" } },
+      crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+      rightPriceScale: { borderColor: "#2d3748" },
+      leftPriceScale:  { borderColor: "#2d3748", visible: hasFlow },
+      timeScale:       { borderColor: "#2d3748", timeVisible: true },
+    });
+
+    // ── Candlesticks ──────────────────────────────────────────────────────────
+    const candles = _chart.addSeries(LightweightCharts.CandlestickSeries, {
+      upColor:        "#51cf66", downColor:        "#ff6b6b",
+      borderUpColor:  "#51cf66", borderDownColor:  "#ff6b6b",
+      wickUpColor:    "#51cf66", wickDownColor:    "#ff6b6b",
+      priceScaleId: "right",
+    });
+    _chart.priceScale("right").applyOptions({ scaleMargins: { top: 0.02, bottom: candleBottom } });
+    candles.setData(ohlcv);
+
+    // ── MA5 (overlaid on candlesticks) ────────────────────────────────────────
+    const ma5Series = _chart.addSeries(LightweightCharts.LineSeries, {
+      color: "#ffd43b", lineWidth: 1,
+      priceScaleId: "right", lastValueVisible: false, priceLineVisible: false,
+      title: "MA5",
+    });
+    ma5Series.setData(calcMA(ohlcv, 5));
+
+    // ── Volume ────────────────────────────────────────────────────────────────
+    const volume = _chart.addSeries(LightweightCharts.HistogramSeries, {
+      priceFormat: { type: "volume" }, priceScaleId: "vol",
+    });
+    _chart.priceScale("vol").applyOptions({ scaleMargins: { top: volTop, bottom: volBottom } });
+    volume.setData(ohlcv.map(d => ({
+      time: d.time, value: d.volume,
+      color: d.close >= d.open ? "#51cf6633" : "#ff6b6b33",
+    })));
+
+    // ── RSI(14) ───────────────────────────────────────────────────────────────
+    const rsiData = calcRSI(ohlcv);
+    const rsiSeries = _chart.addSeries(LightweightCharts.LineSeries, {
+      color: "#cc5de8", lineWidth: 1,
+      priceScaleId: "rsi", lastValueVisible: true, priceLineVisible: false,
+      title: "RSI",
+    });
+    _chart.priceScale("rsi").applyOptions({
+      scaleMargins: { top: rsiTop, bottom: rsiBottom },
+      minimum: 0, maximum: 100,
+    });
+    rsiSeries.setData(rsiData);
+
+    // RSI 70 / 30 reference lines
+    const refOpts = { priceScaleId: "rsi", lineWidth: 1, lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false };
+    const rsi70 = _chart.addSeries(LightweightCharts.LineSeries, { ...refOpts, color: "#ff6b6b55" });
+    const rsi30 = _chart.addSeries(LightweightCharts.LineSeries, { ...refOpts, color: "#51cf6655" });
+    if (rsiData.length) {
+      rsi70.setData([{ time: rsiData[0].time, value: 70 }, { time: rsiData.at(-1).time, value: 70 }]);
+      rsi30.setData([{ time: rsiData[0].time, value: 30 }, { time: rsiData.at(-1).time, value: 30 }]);
+    }
+
+    // ── Institutional Flow bars (left scale, bottom) ──────────────────────────
+    if (hasFlow) {
+      const barOpts = { priceScaleId: "left", lastValueVisible: true, priceLineVisible: false };
+      _chart.priceScale("left").applyOptions({ scaleMargins: { top: 0.63, bottom: 0 } });
+
+      const fSeries = _chart.addSeries(LightweightCharts.HistogramSeries, { ...barOpts, title: "Foreign" });
+      const sSeries = _chart.addSeries(LightweightCharts.HistogramSeries, { ...barOpts, title: "SITC"    });
+      const dSeries = _chart.addSeries(LightweightCharts.HistogramSeries, { ...barOpts, title: "Dealer"  });
+
+      fSeries.setData(flow.filter(d => d.foreign_net != null).map(d => ({
+        time: d.time, value: d.foreign_net,
+        color: d.foreign_net >= 0 ? "#4a90e2cc" : "#4a90e255",
+      })));
+      sSeries.setData(flow.filter(d => d.trust_net != null).map(d => ({
+        time: d.time, value: d.trust_net,
+        color: d.trust_net >= 0 ? "#51cf66cc" : "#51cf6655",
+      })));
+      dSeries.setData(flow.filter(d => d.dealer_net != null).map(d => ({
+        time: d.time, value: d.dealer_net,
+        color: d.dealer_net >= 0 ? "#ffa94dcc" : "#ffa94d55",
+      })));
+    }
+
+    _chart.timeScale().fitContent();
+  } catch (e) {
+    container.innerHTML = `<div class="text-center text-danger py-5">Error: ${e.message}</div>`;
+  }
+}
+
+// Resize chart when modal opens
+document.getElementById("chartModal").addEventListener("shown.bs.modal", () => {
+  if (_chart) _chart.applyOptions({ width: document.getElementById("chartContainer").clientWidth });
+});
+</script>
+</body>
+</html>

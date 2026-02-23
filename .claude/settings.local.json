@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install:*)",
+      "Bash(python:*)",
+      "WebSearch",
+      "WebFetch(domain:ranaroussi.github.io)",
+      "WebFetch(domain:www.twse.com.tw)",
+      "WebFetch(domain:openapi.twse.com.tw)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:hackmd.io)",
+      "Bash(curl:*)",
+      "Bash(python3:*)",
+      "Bash(open:*)",
+      "Bash(until curl -s http://localhost:5001/status)",
+      "Bash(do sleep 5)",
+      "Bash(done)",
+      "Bash(pkill:*)",
+      "Bash(for sym in 2454.TW 2881.TW 2886.TW)",
+      "Bash(do)",
+      "Bash(echo:*)"
+    ]
+  }
+}

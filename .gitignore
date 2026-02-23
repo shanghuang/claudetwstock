@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.pyo
+t86_cache.db
+tw_picks_*.csv
+.env
