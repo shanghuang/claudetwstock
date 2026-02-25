@@ -15,6 +15,7 @@ import warnings
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 
+import stock_cache
 import t86_cache
 
 import numpy as np
@@ -348,10 +349,20 @@ def fetch(symbol: str, retries: int = 3, timeout: int = 20) -> tuple[pd.DataFram
     """
     Fetch 1-year price history and fundamental info via yfinance.
 
-    Each attempt runs in a daemon thread with a hard *timeout* so a hung
-    socket can never freeze the entire screening loop.  Retries with
-    exponential backoff on clean failures (empty / exception).
+    Checks the local SQLite cache first — if today's data is already
+    stored, returns it immediately without hitting the network.
+    Otherwise fetches from yfinance (daemon thread with hard timeout),
+    saves to cache on success, and retries with exponential backoff on
+    clean failures.
     """
+    today = datetime.now(TW_TZ).date().isoformat()
+
+    # ── Cache hit ──────────────────────────────────────────────────────────────
+    df, info = stock_cache.load(symbol, today)
+    if df is not None:
+        return df, info
+
+    # ── Fetch from yfinance ────────────────────────────────────────────────────
     for attempt in range(retries):
         container: list = []
 
@@ -369,13 +380,15 @@ def fetch(symbol: str, retries: int = 3, timeout: int = 20) -> tuple[pd.DataFram
         t.join(timeout=timeout)
 
         if container:
-            return container[0]          # success
+            df, info = container[0]
+            stock_cache.save(symbol, today, df, info)
+            return df, info
 
         if t.is_alive():
-            # Thread is still blocked — skip entirely, no retry
+            # Hung socket — skip entirely, no retry
             return None, None
 
-        # Clean failure (empty data / exception) — retry with backoff
+        # Clean failure — retry with backoff
         if attempt < retries - 1:
             time.sleep(2 ** attempt)     # 1 s → 2 s → 4 s
 
