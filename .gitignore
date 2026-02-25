@@ -3,4 +3,5 @@ __pycache__/
 *.pyo
 t86_cache.db
 tw_picks_*.csv
+universe_cache.json
 .env

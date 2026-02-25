@@ -7,6 +7,8 @@ Flask web server (app.py).
 """
 
 import json
+import os
+import threading
 import time
 import urllib.request
 import warnings
@@ -55,7 +57,58 @@ CONFIG = {
 
 # ─── Taiwan Stock Universe ─────────────────────────────────────────────────────
 
-STOCK_UNIVERSE = [
+_UNIVERSE_CACHE = os.path.join(os.path.dirname(__file__), "universe_cache.json")
+_TWSE_ALL_URL   = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
+
+
+def _load_universe() -> list[str]:
+    """
+    Return all TWSE-listed common stocks as 'XXXX.TW' symbols.
+
+    Fetches from the TWSE Open API and caches to universe_cache.json for
+    the rest of the calendar day.  Falls back to the hardcoded list on
+    any network or parse failure.
+    """
+    today = datetime.now(TW_TZ).date().isoformat()
+
+    # ── Cache hit ──────────────────────────────────────────────────────────────
+    try:
+        with open(_UNIVERSE_CACHE) as f:
+            cached = json.load(f)
+        if cached.get("date") == today and cached.get("symbols"):
+            return cached["symbols"]
+    except Exception:
+        pass
+
+    # ── Fetch from TWSE Open API ───────────────────────────────────────────────
+    try:
+        req = urllib.request.Request(
+            _TWSE_ALL_URL,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+
+        symbols = [
+            f"{row['Code']}.TW"
+            for row in data
+            if row.get("Code", "").isdigit()
+            and len(row["Code"]) == 4
+            and not row["Code"].startswith("0")
+        ]
+
+        if symbols:
+            with open(_UNIVERSE_CACHE, "w") as f:
+                json.dump({"date": today, "symbols": symbols}, f)
+            return symbols
+    except Exception:
+        pass
+
+    # ── Fallback: hardcoded list ───────────────────────────────────────────────
+    return _FALLBACK_UNIVERSE
+
+
+_FALLBACK_UNIVERSE = [
     # ── Semiconductors ────────────────────────────────────────────────────────
     "2330.TW",  # TSMC
     "2303.TW",  # UMC
@@ -116,6 +169,8 @@ STOCK_UNIVERSE = [
     "1216.TW",  # Uni-President Enterprises
     "2105.TW",  # Cheng Shin Rubber
 ]
+
+STOCK_UNIVERSE = _load_universe()
 
 
 # ─── Technical Indicators ─────────────────────────────────────────────────────
@@ -289,16 +344,42 @@ def score_financial(info: dict) -> tuple[int, dict]:
 
 # ─── Data Fetching ────────────────────────────────────────────────────────────
 
-def fetch(symbol: str) -> tuple[pd.DataFrame | None, dict | None]:
-    """Fetch 1-year price history and fundamental info via yfinance."""
-    try:
-        ticker = yf.Ticker(symbol)
-        df     = ticker.history(period="1y")
-        if df.empty:
+def fetch(symbol: str, retries: int = 3, timeout: int = 20) -> tuple[pd.DataFrame | None, dict | None]:
+    """
+    Fetch 1-year price history and fundamental info via yfinance.
+
+    Each attempt runs in a daemon thread with a hard *timeout* so a hung
+    socket can never freeze the entire screening loop.  Retries with
+    exponential backoff on clean failures (empty / exception).
+    """
+    for attempt in range(retries):
+        container: list = []
+
+        def _do_fetch():
+            try:
+                ticker = yf.Ticker(symbol)
+                df     = ticker.history(period="1y")
+                if not df.empty:
+                    container.append((df, ticker.info))
+            except Exception:
+                pass
+
+        t = threading.Thread(target=_do_fetch, daemon=True)
+        t.start()
+        t.join(timeout=timeout)
+
+        if container:
+            return container[0]          # success
+
+        if t.is_alive():
+            # Thread is still blocked — skip entirely, no retry
             return None, None
-        return df, ticker.info
-    except Exception:
-        return None, None
+
+        # Clean failure (empty data / exception) — retry with backoff
+        if attempt < retries - 1:
+            time.sleep(2 ** attempt)     # 1 s → 2 s → 4 s
+
+    return None, None
 
 
 def _nan_to_none(val):
@@ -471,65 +552,70 @@ def screen(
     t86_date = dates[0]     if dates     else None
 
     for i, sym in enumerate(symbols, 1):
-        df, info = fetch(sym)
-        if df is None:
+        try:
+            df, info = fetch(sym)
+            if df is None:
+                if on_progress:
+                    on_progress(i, total, sym, False, {})
+                time.sleep(CONFIG["api_delay"])
+                continue
+
+            df = add_indicators(df)
+
+            t_score, t_det = score_technical(df)
+            v_score, v_det = score_value(info)
+            f_score, f_det = score_financial(info)
+
+            composite = (
+                t_score * CONFIG["weight_technical"]
+                + v_score * CONFIG["weight_value"]
+                + f_score * CONFIG["weight_financial"]
+            )
+
+            price = float(df["Close"].iloc[-1])
+            name  = (info.get("shortName") or sym)[:28]
+
+            # Look up institutional flow by the bare 4-digit code
+            code = sym.split(".")[0]
+            t86  = t86_map.get(code, {})
+
+            result = {
+                "symbol":          sym,
+                "name":            name,
+                "price":           round(price, 2),
+                "composite":       round(composite, 1),
+                "technical":       t_score,
+                "value":           v_score,
+                "financial":       f_score,
+                "pe":              _nan_to_none(v_det.get("PE")),
+                "pb":              _nan_to_none(v_det.get("PB")),
+                "div_yield":       _nan_to_none(v_det.get("DivYield")),
+                "rsi":             _nan_to_none(t_det.get("RSI")),
+                "bias5":           _nan_to_none(t_det.get("Bias5")),
+                "macd_bull":       bool(t_det.get("MACD_bullish", False)),
+                "rev_growth":      _nan_to_none(f_det.get("RevGrowth")),
+                "eps_growth":      _nan_to_none(f_det.get("EPSGrowth")),
+                "profit_margin":   _nan_to_none(f_det.get("ProfitMargin")),
+                # ── TWSE T86 institutional flow (shares, positive = net buy) ──
+                "foreign_net":     t86.get("foreign_net"),
+                "trust_net":       t86.get("trust_net"),
+                "dealer_net":      t86.get("dealer_net"),
+                "three_major_net": t86.get("three_major_net"),
+                "t86_date":        t86_date,
+                # ── Consecutive buy-day streaks ───────────────────────────────
+                "foreign_consecutive": _consecutive_buys(days_data, code, "foreign_net"),
+                "sitc_consecutive":    _consecutive_buys(days_data, code, "trust_net"),
+                "dealer_consecutive":  _consecutive_buys(days_data, code, "dealer_net"),
+            }
+
+            results.append(result)
+
+            if on_progress:
+                on_progress(i, total, sym, True, result)
+
+        except Exception:
             if on_progress:
                 on_progress(i, total, sym, False, {})
-            time.sleep(CONFIG["api_delay"])
-            continue
-
-        df = add_indicators(df)
-
-        t_score, t_det = score_technical(df)
-        v_score, v_det = score_value(info)
-        f_score, f_det = score_financial(info)
-
-        composite = (
-            t_score * CONFIG["weight_technical"]
-            + v_score * CONFIG["weight_value"]
-            + f_score * CONFIG["weight_financial"]
-        )
-
-        price = float(df["Close"].iloc[-1])
-        name  = (info.get("shortName") or sym)[:28]
-
-        # Look up institutional flow by the bare 4-digit code
-        code = sym.split(".")[0]
-        t86  = t86_map.get(code, {})
-
-        result = {
-            "symbol":          sym,
-            "name":            name,
-            "price":           round(price, 2),
-            "composite":       round(composite, 1),
-            "technical":       t_score,
-            "value":           v_score,
-            "financial":       f_score,
-            "pe":              _nan_to_none(v_det.get("PE")),
-            "pb":              _nan_to_none(v_det.get("PB")),
-            "div_yield":       _nan_to_none(v_det.get("DivYield")),
-            "rsi":             _nan_to_none(t_det.get("RSI")),
-            "bias5":           _nan_to_none(t_det.get("Bias5")),
-            "macd_bull":       bool(t_det.get("MACD_bullish", False)),
-            "rev_growth":      _nan_to_none(f_det.get("RevGrowth")),
-            "eps_growth":      _nan_to_none(f_det.get("EPSGrowth")),
-            "profit_margin":   _nan_to_none(f_det.get("ProfitMargin")),
-            # ── TWSE T86 institutional flow (shares, positive = net buy) ──────
-            "foreign_net":     t86.get("foreign_net"),
-            "trust_net":       t86.get("trust_net"),
-            "dealer_net":      t86.get("dealer_net"),
-            "three_major_net": t86.get("three_major_net"),
-            "t86_date":        t86_date,
-            # ── Consecutive buy-day streaks ───────────────────────────────────
-            "foreign_consecutive": _consecutive_buys(days_data, code, "foreign_net"),
-            "sitc_consecutive":    _consecutive_buys(days_data, code, "trust_net"),
-            "dealer_consecutive":  _consecutive_buys(days_data, code, "dealer_net"),
-        }
-
-        results.append(result)
-
-        if on_progress:
-            on_progress(i, total, sym, True, result)
 
         time.sleep(CONFIG["api_delay"])
 
