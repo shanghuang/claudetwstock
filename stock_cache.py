@@ -9,7 +9,9 @@ DB file: stock_cache.db  (excluded from git)
 """
 
 import json
+import math
 import os
+import re
 import sqlite3
 
 import pandas as pd
@@ -57,17 +59,21 @@ def load(symbol: str, date_iso: str) -> tuple:
         return None, None
 
     df   = pd.read_json(prow[0], orient="split", convert_dates=True)
-    info = json.loads(irow[0])
+    # Sanitise invalid JSON floats (NaN/Infinity) written by older saves
+    clean = re.sub(r':\s*-?(?:NaN|Infinity)\b', ': null', irow[0])
+    info  = json.loads(clean)
     return df, info
 
 
 def save(symbol: str, date_iso: str, df: pd.DataFrame, info: dict) -> None:
     """Persist price history and fundamentals for *symbol* on *date_iso*."""
     df_json   = df.to_json(orient="split", date_format="iso")
-    info_json = json.dumps(
-        {k: v for k, v in info.items() if v is not None},
-        default=str,   # handle any non-serialisable types safely
-    )
+    # Filter None AND non-finite floats (NaN/Inf) — standard json cannot encode them
+    clean_info = {
+        k: v for k, v in info.items()
+        if v is not None and not (isinstance(v, float) and not math.isfinite(v))
+    }
+    info_json = json.dumps(clean_info, default=str)
     with _connect() as con:
         con.execute(
             "INSERT OR REPLACE INTO price_cache (symbol, date, data) VALUES (?,?,?)",
