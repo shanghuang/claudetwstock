@@ -8,6 +8,7 @@ next trading day.
 DB file: stock_cache.db  (excluded from git)
 """
 
+import io
 import json
 import math
 import os
@@ -58,7 +59,7 @@ def load(symbol: str, date_iso: str) -> tuple:
     if not prow or not irow:
         return None, None
 
-    df   = pd.read_json(prow[0], orient="split", convert_dates=True)
+    df   = pd.read_json(io.StringIO(prow[0]), orient="split", convert_dates=True)
     # Sanitise invalid JSON floats (NaN/Infinity) written by older saves
     clean = re.sub(r':\s*-?(?:NaN|Infinity)\b', ': null', irow[0])
     info  = json.loads(clean)
