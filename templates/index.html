@@ -655,8 +655,9 @@ document.getElementById("btnStart").addEventListener("click", async () => {
       body: JSON.stringify({ symbols }),
     });
     if (!resp.ok) {
-      const err = await resp.json();
-      alert("Error: " + err.error);
+      let msg = `HTTP ${resp.status}`;
+      try { const err = await resp.json(); msg = err.error || msg; } catch (_) {}
+      alert("Error: " + msg);
       document.getElementById("btnStart").disabled = false;
       document.getElementById("btnStart").textContent = "▶ Start Screening";
       return;
