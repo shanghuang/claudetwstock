@@ -204,6 +204,63 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def check_pullback_signal(df: pd.DataFrame) -> bool:
+    """
+    Detect the pullback buy signal from the MultiCharts indicator (someindicator.txt).
+
+    Original conditions (C=Close, O=Open, V=Volume, [1]=previous bar):
+      1. trueany(C<O, 3)      – at least one bearish bar in the last 3
+      2. C > O[1]             – today's close above yesterday's open
+      3. V > V[1]             – today's volume above yesterday's
+      4. Call_VB >= Call_VB[1]– OBV is flat or rising  (approx.)
+      5. VV crossed 0 upward AND 5W > 0
+         OR  5W crossed 0 upward AND VV > 0
+           where VV  = 5-bar volume-weighted candle-body momentum (approx. Call_VV)
+                 5W  = 25-bar price rate-of-change, i.e. 5-week momentum (approx. Call_5W)
+    """
+    if df is None or len(df) < 30:
+        return False
+
+    c = df["Close"]
+    o = df["Open"]
+    v = df["Volume"]
+
+    # 1. trueany(C<O, 3): any bearish candle in last 3 bars
+    if not (c.iloc[-3:] < o.iloc[-3:]).any():
+        return False
+
+    # 2. C > O[1]: today's close above yesterday's open
+    if float(c.iloc[-1]) <= float(o.iloc[-2]):
+        return False
+
+    # 3. V > V[1]: volume increasing
+    if float(v.iloc[-1]) <= float(v.iloc[-2]):
+        return False
+
+    # 4. OBV flat or rising (proxy for Call_VB >= Call_VB[1])
+    obv = (np.sign(c.diff().fillna(0)) * v).cumsum()
+    if float(obv.iloc[-1]) < float(obv.iloc[-2]):
+        return False
+
+    # 5. Call_VV proxy: 5-bar volume-weighted candle body momentum
+    vv = ((c - o) * v).rolling(5).sum() / v.rolling(5).sum()
+    vv0 = float(vv.iloc[-1])
+    vv1 = float(vv.iloc[-2])
+
+    # 6. Call_5W proxy: 25-bar (≈5 week) price rate-of-change
+    if len(df) < 27:
+        return False
+    roc25 = (c / c.shift(25) - 1) * 100
+    w5_0 = float(roc25.iloc[-1])
+    w5_1 = float(roc25.iloc[-2])
+
+    cond = (
+        (vv1 < 0 and vv0 > 0 and w5_0 > 0) or
+        (w5_1 < 0 and w5_0 > 0 and vv0 > 0)
+    )
+    return bool(cond)
+
+
 # ─── Scoring ──────────────────────────────────────────────────────────────────
 
 def score_technical(df: pd.DataFrame) -> tuple[int, dict]:
@@ -573,6 +630,7 @@ def screen(
                 time.sleep(CONFIG["api_delay"])
                 continue
 
+            pb_signal = check_pullback_signal(df)
             df = add_indicators(df)
 
             t_score, t_det = score_technical(df)
@@ -619,6 +677,8 @@ def screen(
                 "foreign_consecutive": _consecutive_buys(days_data, code, "foreign_net"),
                 "sitc_consecutive":    _consecutive_buys(days_data, code, "trust_net"),
                 "dealer_consecutive":  _consecutive_buys(days_data, code, "dealer_net"),
+                # ── Pullback signal ───────────────────────────────────────────
+                "pullback_signal":     pb_signal,
             }
 
             results.append(result)
